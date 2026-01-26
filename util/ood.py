@@ -148,7 +148,7 @@ def novel_cluster_detection(
     if 'X_umap' not in testadata.obsm_keys():
         sc.tl.umap(testadata)
 
-    fig, axes = plt.subplots(1, 3, figsize=(12, 16))
+    fig, axes = plt.subplots(3, 1, figsize=(8, 16)) 
     axes = axes.flatten()
 
     sc.pl.umap(testadata, color='louvain', title='Louvain Clusters',
@@ -173,49 +173,6 @@ def novel_cluster_detection(
 
 
 def label_novel_cells_as_unknown(
-    testadata,
-    cell_type_key: str,
-    ood_cluster_key: str = 'is_ood_cluster'
-):
-    """
-    将已识别为 OOD 簇中所有细胞的细胞类型标记为 'Unknown'。
-
-    参数:
-    - testadata: AnnData 对象，其中包含 'is_ood_cluster' 列。
-    - cell_type_key: 存储细胞类型注释的 obs 列名。
-    - ood_cluster_key: 标识一个细胞是否属于 OOD 簇的布尔值 obs 列名。
-    """
-    print(f"\n--- 步骤 4: 将 OOD 簇中的细胞标记为 'unknown' (在 '{cell_type_key}' 列) ---")
-
-    if ood_cluster_key not in testadata.obs:
-        raise KeyError(f"在 obs 中未找到 OOD 簇标记列 '{ood_cluster_key}'。请先运行 identify_ood_clusters。")
-    if cell_type_key not in testadata.obs:
-        raise KeyError(f"在 obs 中未找到细胞类型列 '{cell_type_key}'。")
-
-    # 确保细胞类型列是 category 类型，并且 'Unknown' 是一个合法的类别
-    if pd.api.types.is_categorical_dtype(testadata.obs[cell_type_key]):
-        if 'unknown' not in testadata.obs[cell_type_key].cat.categories:
-            testadata.obs[cell_type_key] = testadata.obs[cell_type_key].cat.add_categories(['unknown'])
-    
-    # 找到 OOD 簇中的细胞
-    ood_cells_mask = testadata.obs[ood_cluster_key] == True
-    num_ood_cells = ood_cells_mask.sum()
-
-    if num_ood_cells == 0:
-        print("没有找到属于 OOD 簇的细胞，无需更新。")
-        return testadata
-
-    print(f"找到了 {num_ood_cells} 个细胞属于 OOD 簇。")
-
-    # 使用 .loc 来确保安全赋值
-    testadata.obs.loc[ood_cells_mask, cell_type_key] = 'unknown'
-    
-    print(f"已将 {num_ood_cells} 个细胞的类型更新为 'unknown'。")
-    
-    return testadata
-
-
-def label_ood_cells_as_unknown(
     testadata,
     cell_type_key: str,
     ood_cluster_key: str = 'is_ood_cluster'
