@@ -140,13 +140,10 @@ class MLP(nn.Module):
             # here we could return a batch norm for example
             if post_linear is not None:
                 all_modules.append(post_linear)
-
-            # 使用LayerNorm替代BatchNorm，对batch size没有限制
             all_modules.append(nn.LayerNorm(layer_size))
-            ################
             # handle activation (assumed no params -- deal with that later)
             all_modules.append(activation())
-            all_modules.append(nn.Dropout(p=0.3))#############
+            all_modules.append(nn.Dropout(p=0.3))
            
             # now handle after activation
             post_activation = post_act_fct(

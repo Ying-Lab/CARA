@@ -32,7 +32,6 @@ class DistAlignEMA:
     def update(self, probs_lb):
         if probs_lb is not None:
             p_model_batch = probs_lb.mean(dim=0)
-            # 确保设备一致性
             self.p_model = self.p_model.to(p_model_batch.device)
             self.p_model = self.momentum * self.p_model + (1 - self.momentum) * p_model_batch
             
@@ -47,7 +46,7 @@ class DistAlignEMA:
         probs_ulb = probs_ulb * (p_target / (probs_ulb_avg + 1e-8)).unsqueeze(0)
         return probs_ulb
 
-class cara(nn.Module):
+class buildmodel(nn.Module):
     def __init__(self,
                  output_size = 10,
                  rna_input_size = 1000,
@@ -59,12 +58,11 @@ class cara(nn.Module):
                  config_enum = None,
                  aux_loss_multiplier = None,
                  alpha=0.01,
-                 # 新增类别权重相关参数
                  use_class_weights=False,
                  class_weight_method='balanced',  # 'balanced', 'inverse_freq', 'manual'
                  manual_class_weights=None,
-                 confidence_threshold=0.8,  # 伪标签置信度阈值
-                 weight_update_frequency=100,  # 权重更新频率
+                 confidence_threshold=0.8,  
+                 weight_update_frequency=100, 
     ):
         super().__init__()
 
@@ -82,28 +80,24 @@ class cara(nn.Module):
         self.adversarial_alpha = 0.5
         self.alpha = alpha
 
-        # 新增类别权重相关参数
         self.use_class_weights = use_class_weights
         self.class_weight_method = class_weight_method
         self.manual_class_weights = manual_class_weights
         self.confidence_threshold = confidence_threshold
         self.weight_update_frequency = weight_update_frequency
         
-        # 权重相关状态
         self.class_weights_tensor = None
         self.labeled_class_counts = torch.zeros(output_size)
         self.unlabeled_class_counts = torch.zeros(output_size)
         self.total_samples_seen = 0
         self.update_counter = 0
         
-        # 设置网络
         self.setup_networks()
         self.dist_aligner = DistAlignEMA(self.output_size, 0.99, p_target_type='model')
 
     def setup_networks(self):
         hidden_sizes = self.hidden_layers
         
-        # 原有网络结构保持不变
         self.encoder_rna2z = MLP(
             [self.rna_input_size] + hidden_sizes + [[self.z_dim, self.z_dim]],
             activation=nn.Softplus,
@@ -212,82 +206,53 @@ class cara(nn.Module):
         
         all_labels = np.array(all_labels)
         
-        # 添加调试信息
         unique_labels = np.unique(all_labels)
 
         if self.class_weight_method == 'balanced':
-            # 关键修改：只使用数据中实际存在的类别
             existing_classes = unique_labels
-            
-            # 使用sklearn计算存在类别的权重
             weights = compute_class_weight('balanced', classes=existing_classes, y=all_labels)
-            
-            # 创建完整的权重张量，默认权重为1.0
             class_weights = torch.ones(self.output_size, dtype=torch.float32, device=device)
-            
-            # 为存在的类别设置计算出的权重
             for i, class_idx in enumerate(existing_classes):
-                if class_idx < self.output_size:  # 确保索引有效
+                if class_idx < self.output_size:  
                     class_weights[class_idx] = weights[i]
             
             
         else:
-            # 逆频率权重
             unique, counts = np.unique(all_labels, return_counts=True)
             total_samples = len(all_labels)
             weights = total_samples / (len(unique) * counts)
             
             class_weights = torch.ones(self.output_size, dtype=torch.float32, device=device)
             for i, class_idx in enumerate(unique):
-                if class_idx < self.output_size:  # 确保索引有效
+                if class_idx < self.output_size: 
                     class_weights[class_idx] = weights[i]
         
         return class_weights
 
 
     def update_class_weights_with_pseudolabels(self, predictions, confidences):
-        """
-        基于伪标签更新类别权重
-        """
         if not self.use_class_weights:
             return
         
         self.update_counter += 1
-        
-        # 只在指定频率更新权重
         if self.update_counter % self.weight_update_frequency != 0:
             return
-        
-        # 获取高置信度的伪标签
         high_conf_mask = confidences.max(dim=1)[0] > self.confidence_threshold
         if high_conf_mask.sum() == 0:
             return
-        
         pseudo_labels = predictions[high_conf_mask].argmax(dim=1)
-        
-        # 更新无标签数据的类别计数
         for label in pseudo_labels:
             self.unlabeled_class_counts[label.item()] += 1
-        
-        # 重新计算权重
         total_counts = self.labeled_class_counts + self.unlabeled_class_counts
-        
-        # 避免除零
         total_counts = torch.clamp(total_counts, min=1.0)
-        
-        # 计算新的权重
         total_samples = total_counts.sum()
         new_weights = total_samples / (self.output_size * total_counts)
-        
-        # 平滑更新权重
         if self.class_weights_tensor is not None:
             momentum = 0.9
             self.class_weights_tensor = (momentum * self.class_weights_tensor + 
                                        (1 - momentum) * new_weights.to(device))
         else:
             self.class_weights_tensor = new_weights.to(device)
-        
-        # 归一化
         self.class_weights_tensor = (self.class_weights_tensor / 
                                    self.class_weights_tensor.sum() * self.output_size)
 
@@ -296,10 +261,7 @@ class cara(nn.Module):
         return self.batch_discriminator(z_rev)
 
     def model(self, xs, ys=None, mode=torch.tensor([1., 0.]), batch=None):
-        """
-        原有的生成模型，保持不变
-        """
-        pyro.module('scc', self)
+        pyro.module('cara', self)
         xs = xs.to(device)
         mode = mode.to(device)        
         batch = batch.to(device)
@@ -319,7 +281,6 @@ class cara(nn.Module):
             zys = pyro.sample("zy", dist.Normal(zy_loc, zy_scale).to_event(1))
 
             if not torch.equal(set(mode).pop(), rna):
-                # ATAC数据处理
                 ls_loc = torch.ones(batch_size, self.atac_input_size, **options)
                 ls_scale = torch.ones(batch_size, self.atac_input_size, **options)
                 ls = pyro.sample("atac_ls", dist.LogNormal(ls_loc, ls_scale).to_event(1))
@@ -341,11 +302,7 @@ class cara(nn.Module):
                 ).to(device)
            
             if torch.equal(set(mode).pop(), rna):
-                # RNA数据处理
-                sum_per_sample = xs.sum(dim=1)
-                if (sum_per_sample <= 0).any():
-                    print("存在样本总和为零或负数！")
-                    
+                sum_per_sample = xs.sum(dim=1)                    
                 ls_loc = torch.ones(batch_size, self.rna_input_size, **options)
                 ls_scale = torch.ones(batch_size, self.rna_input_size, **options)
                 ls = pyro.sample("rna_ls", dist.LogNormal(ls_loc, ls_scale).to_event(1))
@@ -367,9 +324,6 @@ class cara(nn.Module):
                 ).to(device)
 
     def guide(self, xs, ys=None, mode=torch.tensor([1., 0.]), batch=None):
-        """
-        原有的推理网络，保持不变
-        """
         xs = xs.to(device)
         mode = mode.to(device)
         rna = torch.tensor([0., 1.]).to(device)
@@ -396,16 +350,12 @@ class cara(nn.Module):
             pyro.sample("z", dist.Normal(z_loc, z_scale).to_event(1))
 
     def model_classify(self, xs, ys=None, mode=None, batch=None):
-        """
-        增强的分类模型，包含类别权重功能
-        """
-        pyro.module('scc', self)
+        pyro.module('cara', self)
         mode = mode.to(device)
         xs = xs.to(device)
         rna = torch.tensor([0., 1.]).to(device)
         
         with pyro.plate('data'):
-            # 统一编码器处理        
             if not torch.equal(set(mode).pop(), rna):
                 zy_loc, _ = self.encoder_atac2z(xs)    
             if torch.equal(set(mode).pop(), rna):
@@ -414,12 +364,8 @@ class cara(nn.Module):
             alpha_y = self.encoder_z2y(zy_loc)
 
             if ys is None:
-                # 无标签数据处理
                 with torch.no_grad():
-                    # 分布对齐
                     alpha_y_aligned = self.dist_aligner.dist_align(probs_ulb=alpha_y)
-                    
-                    # 更新类别权重（基于伪标签）
                     if self.use_class_weights:
                         confidences = F.softmax(alpha_y, dim=1)
                         self.update_class_weights_with_pseudolabels(alpha_y_aligned, confidences)
@@ -428,11 +374,8 @@ class cara(nn.Module):
                     ys_aux = pyro.sample('y_aux', dist.OneHotCategorical(alpha_y_aligned))
 
             else:
-                # 有标签数据处理
                 with torch.no_grad():
                     self.dist_aligner.update(probs_lb=alpha_y)
-                    
-                    # 更新有标签数据的类别计数
                     if self.use_class_weights:
                         target_indices = ys.argmax(dim=1)
                         for idx in target_indices:
@@ -442,16 +385,10 @@ class cara(nn.Module):
                     if self.use_class_weights and self.class_weights_tensor is not None:
                         target_indices = ys.argmax(dim=1)
                         weights = self.class_weights_tensor[target_indices]
-                        
-                        # 使用factor方式应用个体权重
                         base_dist = dist.OneHotCategorical(alpha_y)
                         log_probs = base_dist.log_prob(ys)
-                        
-                        # 每个样本的权重单独应用
                         additional_weight_term = (weights - 1.0) * log_probs
                         pyro.factor('sample_weights', additional_weight_term.sum())
-                        
-                        # 正常采样（权重已通过factor应用）
                         ys_aux = pyro.sample('y_aux', base_dist, obs=ys)
                     else:
                         ys_aux = pyro.sample('y_aux', dist.OneHotCategorical(alpha_y), obs=ys)
@@ -459,15 +396,11 @@ class cara(nn.Module):
 
     def guide_classify(self, xs, ys=None, mode=None, batch=None):
         """
-        分类的虚拟guide函数
         """
         pass
-
-    def model_classify1(self, xs, ys=None, mode=None, batch=None, adv_training=True):
-        """
-        对抗训练模型，保持原有功能
-        """
-        pyro.module('scc', self)
+    
+    def model_batch(self, xs, ys=None, mode=None, batch=None, adv_training=True):
+        pyro.module('cara', self)
         mode = mode.to(device)
         xs = xs.to(device)
         rna = torch.tensor([0., 1.]).to(device)
@@ -483,16 +416,10 @@ class cara(nn.Module):
                 with pyro.poutine.scale(scale=self.aux_loss_multiplier):
                     pyro.sample('batch_pred', dist.OneHotCategorical(batch_pred), obs=batch)
 
-    def guide_classify1(self, xs, ys=None, batch=None, mode=None):
-        """
-        对抗训练的虚拟guide函数
-        """
+    def guide_batch(self, xs, ys=None, batch=None, mode=None):
         pass
 
     def classifier(self, xs, mode=torch.tensor([1., 0.])):
-        """
-        分类器，保持原有功能
-        """
         rna = torch.tensor([0., 1.])
         if not torch.equal(set(mode).pop(), rna):
             z_loc, _ = self.encoder_atac2z(xs)    
@@ -505,9 +432,6 @@ class cara(nn.Module):
         return ys
 
     def classifier_with_probability(self, xs, mode=torch.tensor([1., 0.])):
-        """
-        带概率的分类器，保持原有功能
-        """
         rna = torch.tensor([0., 1.])
         if not torch.equal(set(mode).pop(), rna):
             z_loc, _ = self.encoder_atac2z(xs)    
@@ -520,9 +444,6 @@ class cara(nn.Module):
         return ys, alpha
 
     def latent_embedding(self, xs, mode=torch.tensor([1., 0.])):
-        """
-        潜在嵌入，保持原有功能
-        """
         rna = torch.tensor([0., 1.])
         if torch.equal(set(mode).pop(), rna):
             zy, _ = self.encoder_rna2z(xs)   
@@ -537,17 +458,3 @@ class cara(nn.Module):
             ys = torch.zeros_like(alpha).scatter_(1, ind, 1.0)
             z_loc, _ = self.encoder_z([zy, ys])
         return z_loc
-    def latent_embedding_zy(self, xs,mode=torch.tensor([1., 0.])):
-        """
-        compute the latent embedding of a cell (or a batch of cells)
-
-        :param xs: a batch of vectors of gene counts from a cell
-        :return: a batch of the latent embeddings
-        """
-        rna = torch.tensor([0., 1.])
-        if torch.equal(set(mode).pop(), rna):
-            zy, _= self.encoder_rna2z(xs)   
-        elif not torch.equal(set(mode).pop(), rna):
-            zy, _= self.encoder_atac2z(xs)        
-        return zy
-    

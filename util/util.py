@@ -38,17 +38,11 @@ from sklearn.metrics import adjusted_rand_score
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score,matthews_corrcoef
 def get_accuracy(data_loader, classifier_fn):
         predictions, actuals = [], []
-
         # use the appropriate data loader
         for (xs, ys, omic,_,_) in data_loader:
-            # current_batch_size = xs.size(0)  
-            # mode = omic  
-            # use classification function to compute all predictions for each batch
-            # mode=torch.zeros(batch_size, 2).scatter_(1, mode.view(-1,1).long(), 1)
             predictions.append(classifier_fn(xs,omic))  
             _, yshat=torch.topk(ys, 1)
             actuals.append(yshat)
-
         # compute the number of accurate predictions
         predictions = torch.cat(predictions, dim=0)
         actuals = torch.cat(actuals, dim=0)
@@ -71,43 +65,33 @@ def get_accuracy(data_loader, classifier_fn):
 def mark_cell_types_unknown(
     adata,
     column: str = 'cell_type',
-    to_unknown=None,                # List/set of categories to be marked as 'unknown'
-    remove_unused: bool = True,     # Whether to remove unused categories
-    drop_existing_unknown: bool = False,  # Whether to filter out existing 'unknown' cells first
-    in_place: bool = True           # Whether to modify in-place; returns a copy if False
+    to_unknown=None,                
+    remove_unused: bool = True,     
+    drop_existing_unknown: bool = False, 
+    in_place: bool = True         
 ):
     """
     Mark specified cell types as 'unknown' and keep categories clean.
     """
     if to_unknown is None:
         to_unknown = []
-
     if column not in adata.obs.columns:
         raise KeyError(f"'{column}' is not in adata.obs")
-
     # If not in-place modification, copy first
     if not in_place:
         adata = adata.copy()
-
     # Optional: Filter out existing 'unknown' cells first
     if drop_existing_unknown:
         adata = adata[adata.obs[column] != 'unknown'].copy()
-
     # Ensure it is a categorical type
     series = adata.obs[column]
     if not pd.api.types.is_categorical_dtype(series):
         adata.obs[column] = pd.Categorical(series)
         series = adata.obs[column]
-
     # Add 'unknown' category (if it doesn't exist)
     if 'unknown' not in series.cat.categories:
         adata.obs[column] = series.cat.add_categories(['unknown'])
         series = adata.obs[column]
-
-    # Mark specified categories as 'unknown'
-    mask = series.isin(to_unknown)
-    adata.obs.loc[mask, column] = 'unknown'
-
     # Optional: Remove unused categories (e.g. categories that were replaced)
     if remove_unused:
         adata.obs[column] = adata.obs[column].cat.remove_unused_categories()
@@ -116,12 +100,12 @@ def mark_cell_types_unknown(
     print("Current categories:", list(adata.obs[column].cat.categories))
     return adata
 
-def evaluate(test_rna_loader_all, scc, loss_basic):
-    predictions, scores, actuals, zs, zys, batchs, exps, barcodes = [], [], [], [], [], [], [], []
+def evaluate(data_loader, cara, loss_basic):
+    predictions, scores, actuals, zs, zys, batchs, xs, barcodes,elbos = [], [], [], [], [], [], [], [],[]
 
     with torch.no_grad():
-        for (exp, ys, omic, barcode, batch) in test_rna_loader_all:
-            yhats, yscores = scc.classifier_with_probability(exp, mode=omic)
+        for (xs, ys, omic, barcode, batch) in data_loader:
+            yhats, yscores = cara.classifier_with_probability(xs, mode=omic)
             scores.append(yscores)
 
             _, yhats = torch.topk(yhats, 1)
@@ -130,16 +114,19 @@ def evaluate(test_rna_loader_all, scc, loss_basic):
             _, yshat = torch.topk(ys, 1)
             actuals.append(yshat.cpu().detach().numpy())
 
-            z = scc.latent_embedding(exp, mode=omic)
+            z = cara.latent_embedding(xs, mode=omic)
             zs.append(z.cpu().detach().numpy())
 
-            zy = scc.latent_embedding_zy(exp, mode=omic)
+            zy = cara.latent_embedding_zy(xs, mode=omic)
             zys.append(zy.cpu().detach().numpy())
             barcodes.append(barcode)
             
 
             batchs.append(batch.cpu().detach().numpy())
-            exps.append(exp.cpu().detach().numpy())
+            exps.append(xs.cpu().detach().numpy())
+            with torch.no_grad():  
+                elbo=loss_basic.evaluate_loss(xs, mode=omic)
+                elbos.append(elbo.cpu().detach().numpy())
 
     batchs = np.concatenate(batchs, axis=0)
     barcodes = np.concatenate(barcodes, axis=0)
@@ -149,22 +136,12 @@ def evaluate(test_rna_loader_all, scc, loss_basic):
     zs = np.concatenate(zs, axis=0)
     zys = np.concatenate(zys, axis=0)
     exps = np.concatenate(exps, axis=0)
+    elbos = np.concatenate(elbos, axis=0)
 
     test_accuracy, test_f1_macro, test_f1_weighted, test_precision, test_recall, test_mcc, ARI, NMI = get_accuracy(
-        test_rna_loader_all, scc.classifier
+        data_loader, cara.classifier
     )
-    
-    dataex = test_rna_loader_all.dataset.data.float()
-    texps=torch.tensor(dataex, dtype=torch.float32)
-    mode = torch.zeros(test_rna_loader_all.batch_size, 1) 
-    mode = torch.zeros(test_rna_loader_all.batch_size, 2).scatter_(1, mode.view(-1,1).long(), 1)
-    with torch.no_grad():  # 禁用梯度计算
-        testloss = [loss_basic.evaluate_loss(xs=texps[i].unsqueeze(0), mode=mode,batch=test_rna_loader_all.dataset.batch) for i in range(dataex.shape[0])]
-
-
-    elbo_loss = np.array(testloss).reshape(-1, 1) if np.array(testloss).ndim == 1 else np.array(testloss)
-    
-    
+   
     str_print1 = " test accuracy {:.4f}".format(test_accuracy)
     str_print1 += " F1 {:.4f}(macro) {:.4f}(weighted)".format(test_f1_macro, test_f1_weighted)
     str_print1 += " precision {:.4f} recall {:.4f}".format(test_precision, test_recall)
@@ -183,7 +160,7 @@ def evaluate(test_rna_loader_all, scc, loss_basic):
         "NMI": NMI,
     }
 
-    return predictions, scores, actuals, zs, zys, batchs, exps, barcodes, elbo_loss, metrics
+    return predictions, scores, actuals, zs, zys, batchs, xs, barcodes, elbo_loss, metrics
 
 
 
@@ -350,16 +327,16 @@ def align_rna_atac_by_union_hvg(rna, atac, n_top_genes=3000):
 
 
 
-def  freeze_classifier(scc):
-    for param in scc.decoder_z2zy.parameters():
+def  freeze_classifier(cara):
+    for param in cara.decoder_z2zy.parameters():
         param.requires_grad = False
-    for param in scc.encoder_z2y.parameters():
+    for param in cara.encoder_z2y.parameters():
         param.requires_grad = False
         
-def  unfreeze_classifier(scc):
-    for param in scc.decoder_z2zy.parameters():
+def  unfreeze_classifier(cara):
+    for param in cara.decoder_z2zy.parameters():
         param.requires_grad = True
-    for param in scc.encoder_z2y.parameters():
+    for param in cara.encoder_z2y.parameters():
         param.requires_grad = True
 
 
@@ -502,7 +479,7 @@ def load_and_process_data(config):
     ATACCE_test = atac_final[val_idx, :] 
     
     # Prepare label mappings 
-    cell_types = RNACE_test.obs['cell_type'].astype('category').cat.categories 
+    cell_types = ATACCE_test.obs['cell_type'].astype('category').cat.categories 
     category_to_index = {category: index for index, category in enumerate(sorted(set(cell_types)))} 
     index_to_category = {index: category for category, index in category_to_index.items()} 
 
@@ -573,14 +550,14 @@ def load_and_process_data(config):
 
     # Create DataLoaders 
     labeled_rna_trainloader = DataLoader(rna_train_labeled_dataset, batch_size=config.BATCH_SIZE, shuffle=True, num_workers=config.NUM_WORKERS, drop_last=True) 
-    test_rna_loader_all = DataLoader(rna_test_rna_dataset, batch_size=config.BATCH_SIZE, shuffle=False, num_workers=config.NUM_WORKERS, drop_last=True) 
+    data_loader = DataLoader(rna_test_rna_dataset, batch_size=config.BATCH_SIZE, shuffle=False, num_workers=config.NUM_WORKERS, drop_last=True) 
     labeled_atac_trainloader = DataLoader(atac_train_labeled_dataset, batch_size=config.BATCH_SIZE, shuffle=True, num_workers=config.NUM_WORKERS, drop_last=True) 
     unlabeled_atac_trainloader = DataLoader(atac_train_unlabeled_dataset, batch_size=config.BATCH_SIZE, shuffle=True, num_workers=config.NUM_WORKERS, drop_last=True) 
     atac_test_loader = DataLoader(atac_test_dataset, batch_size=config.BATCH_SIZE, shuffle=False, num_workers=config.NUM_WORKERS, drop_last=True) 
     
     print("DataLoaders created.")
     
-    return labeled_rna_trainloader, test_rna_loader_all, labeled_atac_trainloader, unlabeled_atac_trainloader, atac_test_loader, index_to_category, batch_num, {
+    return labeled_rna_trainloader, data_loader, labeled_atac_trainloader, unlabeled_atac_trainloader, atac_test_loader, index_to_category, batch_num, {
         'rna_train_labeled_dataset': rna_train_labeled_dataset,
         'rna_test_rna_dataset': rna_test_rna_dataset,
         'atac_train_labeled_dataset': atac_train_labeled_dataset,
@@ -592,4 +569,3 @@ def load_and_process_data(config):
         "RNACE_train" : RNACE_train,
         "RNACE_test" : RNACE_test 
     }
-
