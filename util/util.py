@@ -101,7 +101,7 @@ def mark_cell_types_unknown(
     return adata
 
 def evaluate(data_loader, cara, loss_basic):
-    predictions, scores, actuals, zs, zys, batchs, xs, barcodes,elbos = [], [], [], [], [], [], [], [],[]
+    predictions, scores, actuals, zs, zys, batchs, exps, barcodes,elbos = [], [], [], [], [], [], [], [],[]
 
     with torch.no_grad():
         for (xs, ys, omic, barcode, batch) in data_loader:
@@ -125,9 +125,8 @@ def evaluate(data_loader, cara, loss_basic):
             batchs.append(batch.cpu().detach().numpy())
             exps.append(xs.cpu().detach().numpy())
             with torch.no_grad():  
-                elbo=loss_basic.evaluate_loss(xs, mode=omic)
-                elbos.append(elbo.cpu().detach().numpy())
-
+                elbo= [loss_basic.evaluate_loss(xs[i:i+1], mode=omic[i:i+1], batch=batch[i:i+1]) for i in range(xs.shape[0])]
+                elbos.append(np.array(elbo))
     batchs = np.concatenate(batchs, axis=0)
     barcodes = np.concatenate(barcodes, axis=0)
     predictions = np.concatenate(predictions, axis=0)
@@ -136,7 +135,7 @@ def evaluate(data_loader, cara, loss_basic):
     zs = np.concatenate(zs, axis=0)
     zys = np.concatenate(zys, axis=0)
     exps = np.concatenate(exps, axis=0)
-    elbos = np.concatenate(elbos, axis=0)
+    elbos = np.concatenate([np.asarray(e).ravel() for e in elbos], axis=0)
 
     test_accuracy, test_f1_macro, test_f1_weighted, test_precision, test_recall, test_mcc, ARI, NMI = get_accuracy(
         data_loader, cara.classifier
@@ -160,7 +159,7 @@ def evaluate(data_loader, cara, loss_basic):
         "NMI": NMI,
     }
 
-    return predictions, scores, actuals, zs, zys, batchs, xs, barcodes, elbo_loss, metrics
+    return predictions, scores, actuals, zs, zys, batchs, xs, barcodes, elbos, metrics
 
 
 
