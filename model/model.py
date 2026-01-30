@@ -398,6 +398,26 @@ class buildmodel(nn.Module):
         """
         """
         pass
+    
+    def model_batch(self, xs, ys=None, mode=None, batch=None, adv_training=True):
+        pyro.module('cara', self)
+        mode = mode.to(device)
+        xs = xs.to(device)
+        rna = torch.tensor([0., 1.]).to(device)
+        
+        with pyro.plate('data'):
+            if not torch.equal(set(mode).pop(), rna):
+                zy_loc, _ = self.encoder_atac2z(xs)
+            else:
+                zy_loc, _ = self.encoder_rna2z(xs)
+ 
+            if batch is not None:
+                batch_pred = self.batch_adv(zy_loc, self.adversarial_alpha)
+                with pyro.poutine.scale(scale=self.aux_loss_multiplier):
+                    pyro.sample('batch_pred', dist.OneHotCategorical(batch_pred), obs=batch)
+
+    def guide_batch(self, xs, ys=None, batch=None, mode=None):
+        pass
 
     def classifier(self, xs, mode=torch.tensor([1., 0.])):
         rna = torch.tensor([0., 1.])

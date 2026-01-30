@@ -229,9 +229,6 @@ def compute_metrics(groundtruth, originalcell):
 
 
 
-
-
-
 def align_rna_atac_by_union_hvg(rna, atac, n_top_genes=3000):
     """
     Aligns RNA and ATAC datasets by the union of their highly variable genes (HVGs).
@@ -246,12 +243,6 @@ def align_rna_atac_by_union_hvg(rna, atac, n_top_genes=3000):
         tuple: (rna_final, atac_final, final_feature_list)
     """
     
-    # Assume original data objects are named rna and atac
-    # For clarity, we will name the final processed objects rna_final and atac_final
-    
-    # --- Step 1: Find Highly Variable Genes (HVGs) on copies ---
-    
-    # Using .copy() is good practice to avoid modifying the original data in place
     print("Finding HVGs for RNA data...")
     rna_hvg_search = rna.copy()
     sc.pp.highly_variable_genes(rna_hvg_search, flavor='seurat_v3', n_top_genes=n_top_genes, inplace=True)
@@ -260,23 +251,14 @@ def align_rna_atac_by_union_hvg(rna, atac, n_top_genes=3000):
     atac_search = atac.copy()
     sc.pp.highly_variable_genes(atac_search, flavor='seurat_v3', n_top_genes=n_top_genes, inplace=True)
     
-    # --- Step 2: Create a sorted 'template' list containing all HVGs ---
-    
     hvg_rna = rna_hvg_search.var_names[rna_hvg_search.var['highly_variable']]
     hvg_atac = atac_search.var_names[atac_search.var['highly_variable']]
-    
-    # Calculate union and sort for deterministic ordering
     hvg_union_set = set(hvg_rna) | set(hvg_atac)
     final_feature_list = sorted(list(hvg_union_set))
     
     print(f"\nNumber of RNA HVGs: {len(hvg_rna)}")
     print(f"Number of ATAC HVGs: {len(hvg_atac)}")
     print(f"Total number of unique HVGs in union: {len(final_feature_list)}")
-    
-    # --- Step 3 (Key Modification): Safely align both datasets using pandas.reindex ---
-    
-    # Note: We use the original rna and atac objects here because they contain all genes,
-    # not just the HVG-subsetted copies.
     
     print("\nConverting RNA data to DataFrame for reshaping...")
     # Convert sparse matrix to dense array if necessary
@@ -293,28 +275,21 @@ def align_rna_atac_by_union_hvg(rna, atac, n_top_genes=3000):
         columns=atac.var_names
     )
     
-    # **Critical Step**: Use .reindex() to align columns.
-    # This automatically handles missing genes (filling with 0) and reorders existing ones.
-    
     print("\nAligning RNA data using reindex (filling missing genes with 0)...")
     rna_df_aligned = rna_df.reindex(columns=final_feature_list, fill_value=0)
     
     print("Aligning ATAC data using reindex (filling missing genes with 0)...")
     atac_df_aligned = atac_df.reindex(columns=final_feature_list, fill_value=0)
     
-    # --- Step 4: Convert aligned DataFrames back to AnnData objects ---
-    
     print("\nConverting aligned DataFrames back to AnnData objects...")
     rna_final = sc.AnnData(rna_df_aligned, obs=rna.obs)
     atac_final = sc.AnnData(atac_df_aligned, obs=atac.obs)
     
-    # --- Step 5: Final Verification ---
     
     print("\n--- Verification ---")
     print(f"Final RNA data shape: {rna_final.shape}")
     print(f"Final ATAC data shape: {atac_final.shape}")
     
-    # Check if .var_names are identical (including order)
     are_vars_identical = rna_final.var_names.equals(atac_final.var_names)
     
     if are_vars_identical:
@@ -450,8 +425,8 @@ def load_and_process_data(config):
     # Align RNA and ATAC data by Union HVG 
     rna_final, atac_final, final_feature_list = align_rna_atac_by_union_hvg(rna, atac) 
 
-    # Normalization adjustment 
-    atac_final.X = atac_final.X * rna_final.X.mean() / atac_final.X.mean() 
+    # # Normalization adjustment 
+    # atac_final.X = atac_final.X * rna_final.X.mean() / atac_final.X.mean() 
 
     print("Data alignment complete.") 
     
@@ -549,14 +524,14 @@ def load_and_process_data(config):
 
     # Create DataLoaders 
     labeled_rna_trainloader = DataLoader(rna_train_labeled_dataset, batch_size=config.BATCH_SIZE, shuffle=True, num_workers=config.NUM_WORKERS, drop_last=True) 
-    data_loader = DataLoader(rna_test_rna_dataset, batch_size=config.BATCH_SIZE, shuffle=False, num_workers=config.NUM_WORKERS, drop_last=True) 
+    rna_test_loader = DataLoader(rna_test_rna_dataset, batch_size=config.BATCH_SIZE, shuffle=False, num_workers=config.NUM_WORKERS, drop_last=True) 
     labeled_atac_trainloader = DataLoader(atac_train_labeled_dataset, batch_size=config.BATCH_SIZE, shuffle=True, num_workers=config.NUM_WORKERS, drop_last=True) 
     unlabeled_atac_trainloader = DataLoader(atac_train_unlabeled_dataset, batch_size=config.BATCH_SIZE, shuffle=True, num_workers=config.NUM_WORKERS, drop_last=True) 
     atac_test_loader = DataLoader(atac_test_dataset, batch_size=config.BATCH_SIZE, shuffle=False, num_workers=config.NUM_WORKERS, drop_last=True) 
     
     print("DataLoaders created.")
     
-    return labeled_rna_trainloader, data_loader, labeled_atac_trainloader, unlabeled_atac_trainloader, atac_test_loader, index_to_category, batch_num, {
+    return labeled_rna_trainloader, rna_test_loader, labeled_atac_trainloader, unlabeled_atac_trainloader, atac_test_loader, index_to_category, batch_num, {
         'rna_train_labeled_dataset': rna_train_labeled_dataset,
         'rna_test_rna_dataset': rna_test_rna_dataset,
         'atac_train_labeled_dataset': atac_train_labeled_dataset,
